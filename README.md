@@ -1,4 +1,12 @@
-# six
+[![Build and Test](https://github.com/tomlm/Six/actions/workflows/BuildAndRunTests.yml/badge.svg)](https://github.com/tomlm/Six/actions/workflows/BuildAndRunTests.yml)[![NuGet](https://img.shields.io/nuget/v/Six.svg)](https://www.nuget.org/packages/Six)
+
+![Logo](https://raw.githubusercontent.com/tomlm/Six/refs/heads/main/icon.png)
+
+# Six
+
+![Screenshot](https://raw.githubusercontent.com/tomlm/Six/refs/heads/main/screenshot.gif)
+
+# Six
 
 A terminal image viewer that renders images using [Sixel](https://en.wikipedia.org/wiki/Sixel) graphics, allowing you to browse a folder full of images directly in your terminal.
 
