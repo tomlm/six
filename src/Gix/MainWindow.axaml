@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="GixelViewer.MainWindow"
+        Title="GixelViewer"
+        Background="Black"
+        WindowState="Maximized">
+    <DockPanel>
+        <TextBlock x:Name="Header"
+                   DockPanel.Dock="Top"
+                   Foreground="White"
+                   FontFamily="Consolas, Courier New, monospace"
+                   FontSize="14"
+                   Padding="8,4"
+                   Height="26"
+                   Background="#222" />
+        <Border BorderBrush="#444" BorderThickness="1" Margin="8">
+            <Image x:Name="ImageView"
+                   Stretch="Uniform"
+                   StretchDirection="Both" />
+        </Border>
+    </DockPanel>
+</Window>

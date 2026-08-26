@@ -628,6 +628,21 @@ static void GetConsoleSizePixels(out int widthPx, out int heightPx, out int cell
     {
         cellW = widthPx / cols;
         cellH = heightPx / rows;
+
+        // Round the reported size back down to whole cells.
+        //
+        // The layout below spends every pixel of heightPx on the image after reserving three rows, so
+        // it only fits if heightPx is exactly rows*cellH. But cellH came from flooring that same
+        // division, so any remainder is space belonging to no row at all -- and it gets spent anyway,
+        // making the image up to a row taller than there is room for. It then runs off the bottom and
+        // scrolls the header off the top.
+        //
+        // A terminal that reports its text area exactly, as xterm does, divides evenly and loses
+        // nothing here. One that includes padding or a scrollbar in the figure -- Windows Terminal has
+        // a configurable padding, and not every terminal distinguishes text area from window -- is what
+        // this guards against.
+        widthPx = cols * cellW;
+        heightPx = rows * cellH;
     }
     else
     {
