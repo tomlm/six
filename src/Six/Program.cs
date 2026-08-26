@@ -586,11 +586,43 @@ static void ShowImage(string displayPath, int totalFiles, int index, SortMode so
 
 }
 
+/// <summary>
+/// The console's pixel geometry, asked of the terminal only when the grid has changed.
+/// </summary>
+/// <remarks>
+/// The query underneath is a round trip with a 200ms deadline, and it used to run once per image
+/// shown -- so every keypress cost up to a fifth of a second of spinning on a terminal that does not
+/// answer, and swallowed any key pressed while it waited. The row and column count is the resize
+/// signal: nothing changes the pixel geometry without changing it too, a font size change included.
+/// A failed query is cached like any other answer, so an unresponsive terminal is asked once rather
+/// than on every frame.
+/// </remarks>
 static void GetConsoleSizePixels(out int widthPx, out int heightPx, out int cellW, out int cellH)
 {
     int cols = Console.WindowWidth;
     int rows = Console.WindowHeight;
 
+    if (cols != ConsoleSizeCache.Cols || rows != ConsoleSizeCache.Rows)
+    {
+        QueryConsoleSizePixels(cols, rows,
+            out ConsoleSizeCache.WidthPx, out ConsoleSizeCache.HeightPx,
+            out ConsoleSizeCache.CellW, out ConsoleSizeCache.CellH);
+
+        ConsoleSizeCache.Cols = cols;
+        ConsoleSizeCache.Rows = rows;
+    }
+
+    widthPx = ConsoleSizeCache.WidthPx;
+    heightPx = ConsoleSizeCache.HeightPx;
+    cellW = ConsoleSizeCache.CellW;
+    cellH = ConsoleSizeCache.CellH;
+}
+
+/// <summary>
+/// Asks the terminal for its text area in pixels, and derives the cell size from it.
+/// </summary>
+static void QueryConsoleSizePixels(int cols, int rows, out int widthPx, out int heightPx, out int cellW, out int cellH)
+{
     widthPx = 0;
     heightPx = 0;
 
@@ -959,3 +991,21 @@ static class SixelEncoder
 record CachedFrame(byte[] Sixel, int TargetW, int TargetH, int AvailWidthPx, int AvailHeightPx, int CellW, int CellH);
 
 enum SortMode { Random, Name, NameDesc, Date, DateAsc }
+
+/// <summary>
+/// The last answer the terminal gave about its pixel geometry, and the grid it was given for.
+/// </summary>
+/// <remarks>
+/// A type rather than locals because the program is written as top-level statements, where the
+/// helpers are static local functions and so cannot capture anything.
+/// <para><see cref="Cols"/> starts at -1 so the first call can never match and always asks.</para>
+/// </remarks>
+static class ConsoleSizeCache
+{
+    public static int Cols = -1;
+    public static int Rows = -1;
+    public static int WidthPx;
+    public static int HeightPx;
+    public static int CellW;
+    public static int CellH;
+}
