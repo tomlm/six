@@ -149,6 +149,103 @@ try
         TrimAndPreload(files, index, availW, availH, cellW, cellH, sixelCache, preloadLock);
     }
 
+    /// <summary>
+    /// Replaces every alternate with an upscaled version, in one upscayl run.
+    /// </summary>
+    /// <remarks>
+    /// <para>Synchronous, unlike its counterpart in the GUI. There is no frame to update from a
+    /// background thread here -- the key loop is sitting in ReadKey -- and drawing over the screen
+    /// from somewhere else while it does would scramble the picture on it.</para>
+    /// <para>The alternates all share a filename, which is what makes them alternates, so they are
+    /// staged under indexed names rather than colliding in one folder.</para>
+    /// </remarks>
+    void UpscaleAlternatesAsBatch(string[] alternates, string ext)
+    {
+        if (alternates.Length == 0)
+            return;
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "six_batch_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(tempDir);
+
+        var mapping = new Dictionary<string, string>(); // staged path -> where it came from
+        for (int i = 0; i < alternates.Length; i++)
+        {
+            var staged = Path.Combine(tempDir, $"{i}{ext}");
+            File.Move(alternates[i], staged);
+            mapping[staged] = alternates[i];
+        }
+
+        ShowStatus($" Batch upscaling {alternates.Length} alternate(s)...");
+
+        var psi = new ProcessStartInfo("upscayl", $"-i \"{tempDir}\" -o \"{tempDir}\" -n upscayl-lite-4x -s 2")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        Process.Start(psi)?.WaitForExit();
+
+        bool everythingCameBack = true;
+        foreach (var (staged, home) in mapping)
+        {
+            if (File.Exists(staged))
+            {
+                File.Move(staged, home);
+                lock (preloadLock) { sixelCache.Remove(home); }
+            }
+            else
+            {
+                everythingCameBack = false;
+            }
+        }
+
+        // Only sweep the staging folder up when every picture is back where it belongs. These files
+        // were MOVED out of the library, so deleting the folder after a failed run would take the
+        // originals with it -- and a photo is not something to lose to a tidy-up.
+        if (everythingCameBack)
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+        else
+        {
+            ShowStatus($" Some alternates did not come back; left in {tempDir}  (press any key)");
+            Console.ReadKey(true);
+        }
+    }
+
+    /// <summary>
+    /// Upscales each alternate on its own, all at once, without waiting for any of them.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here touches the playlist arrays -- each task replaces one file in place -- so it is
+    /// safe to leave running while the key loop carries on.
+    /// </remarks>
+    void UpscaleAlternatesInParallel(string[] alternates, string ext)
+    {
+        foreach (var alternate in alternates)
+        {
+            var altPath = alternate;
+            var staged = Path.Combine(Path.GetDirectoryName(altPath)!,
+                                      Path.GetFileNameWithoutExtension(altPath) + "_tmp_upscale" + ext);
+            _ = Task.Run(() =>
+            {
+                var psi = new ProcessStartInfo("upscayl", $"-i \"{altPath}\" -o \"{staged}\" -n upscayl-lite-4x -s 2")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                Process.Start(psi)?.WaitForExit();
+
+                // Staged alongside rather than over the top, so a failed run leaves the original be.
+                if (File.Exists(staged))
+                {
+                    File.Delete(altPath);
+                    File.Move(staged, altPath);
+                    lock (preloadLock) { sixelCache.Remove(altPath); }
+                }
+            });
+        }
+    }
+
     Redraw();
 
     var lastAdvance = Environment.TickCount64;
@@ -189,21 +286,24 @@ try
                     }
                     break;
                 case ConsoleKey.O:
-                    Process.Start(new ProcessStartInfo(files[index]) { UseShellExecute = true });
+                    // What is on screen, which is not the playlist entry while an alternate is being
+                    // cycled through. Opening a different picture from the one being looked at is a
+                    // surprise every time.
+                    Process.Start(new ProcessStartInfo(DisplayPath()) { UseShellExecute = true });
                     break;
                 case ConsoleKey.U:
                     {
                         var src = files[index];
                         var ext = Path.GetExtension(src);
                         var dst = Path.Combine(Path.GetDirectoryName(src)!, Path.GetFileNameWithoutExtension(src) + "_resized" + ext);
-                        var psi = new ProcessStartInfo("upscayl", $"-i \"{src}\" -o \"{dst}\" -n upscayl-lite-4x")
-                        {
-                            UseShellExecute = false,
-                            RedirectStandardOutput = true,
-                            RedirectStandardError = true,
-                        };
-                        var proc = Process.Start(psi);
-                        proc?.WaitForExit();
+
+                        // Already upscaled. Running it again would spend minutes to overwrite the
+                        // result with the same thing.
+                        if (File.Exists(dst))
+                            break;
+
+                        RunUpscale(src, dst);
+
                         if (File.Exists(dst))
                         {
                             // Insert into file arrays and navigate to it
@@ -223,18 +323,35 @@ try
                         var nameNoExt = Path.GetFileNameWithoutExtension(cur);
                         if (nameNoExt.EndsWith("_resized"))
                         {
+                            bool shiftR = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
                             var ext = Path.GetExtension(cur);
-                            var original = Path.Combine(Path.GetDirectoryName(cur)!, nameNoExt[..^"_resized".Length] + ext);
+                            var baseName = nameNoExt[..^"_resized".Length];
+                            var original = Path.Combine(Path.GetDirectoryName(cur)!, baseName + ext);
+                            var originalFileName = baseName + ext;
+
+                            lock (preloadLock) { sixelCache.Remove(cur); sixelCache.Remove(original); }
+
+                            // Step 1: the resized file takes the original's place.
                             File.Delete(original);
                             File.Move(cur, original);
-                            // Remove _resized from arrays, clear caches for both
                             allFiles = allFiles.Where(f => f != cur).ToArray();
                             files = files.Where(f => f != cur).ToArray();
-                            lock (preloadLock) { sixelCache.Remove(cur); sixelCache.Remove(original); }
-                            // Navigate to the original
-                            int origIdx = Array.FindIndex(files, f => string.Equals(f, original, StringComparison.OrdinalIgnoreCase));
-                            if (origIdx >= 0) index = origIdx;
-                            else if (index >= files.Length) index = files.Length - 1;
+
+                            // Step 2: give every same-named file in the other folders the same
+                            // treatment. Accepting an upscale for one copy of a picture and leaving
+                            // the copies alone is almost never what was meant.
+                            var alternates = allFiles.Where(f => f != original
+                                && Path.GetFileName(f).Equals(originalFileName, StringComparison.OrdinalIgnoreCase)).ToArray();
+
+                            if (shiftR)
+                                UpscaleAlternatesInParallel(alternates, ext);
+                            else
+                                UpscaleAlternatesAsBatch(alternates, ext);
+
+                            // Stay put. The _resized entry has just left the list, so this index is
+                            // already the NEXT picture; going back to the original would mean staring
+                            // at the one just replaced.
+                            if (index >= files.Length) index = files.Length - 1;
                             ResetAlt();
                             Redraw();
                         }
@@ -690,6 +807,57 @@ static void QueryConsoleSizePixels(int cols, int rows, out int widthPx, out int 
 /// Takes pre-quantized indexed pixel data and palette.
 /// Uses SIMD for bitmask building, pooled buffers, direct byte[] output.
 /// </summary>
+static void RunUpscale(string source, string destination)
+{
+    var psi = new ProcessStartInfo("upscayl", $"-i \"{source}\" -o \"{destination}\" -n upscayl-lite-4x -s 2")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+    };
+
+    var name = Path.GetFileName(source);
+    int lines = 0;
+
+    ShowStatus($" Upscaling {name}  [{ProgressBar(0, 10)}]   0%");
+
+    var proc = Process.Start(psi);
+    if (proc == null)
+        return;
+
+    // Fired on a thread pool thread, which is safe to write from only because the thread that would
+    // otherwise be drawing is parked in WaitForExit below.
+    void OnData(object sender, DataReceivedEventArgs args)
+    {
+        if (args.Data == null)
+            return;
+
+        int n = Math.Min(Interlocked.Increment(ref lines), 10);
+        ShowStatus($" Upscaling {name}  [{ProgressBar(n, 10)}] {n * 100 / 10,3}%");
+    }
+
+    proc.OutputDataReceived += OnData;
+    proc.ErrorDataReceived += OnData;
+    proc.BeginOutputReadLine();
+    proc.BeginErrorReadLine();
+    proc.WaitForExit();
+}
+
+/// <summary>
+/// Overwrites the caption row, where the header normally sits.
+/// </summary>
+/// <remarks>
+/// Clears to end of line, so a short message does not leave the tail of a longer one behind it.
+/// </remarks>
+static void ShowStatus(string text) => Console.Write($"\u001b[1;1H{text}\u001b[K");
+
+static string ProgressBar(int current, int total, int width = 20)
+{
+    int filled = total > 0 ? current * width / total : 0;
+    return new string('█', filled) + new string('░', width - filled);
+}
+
 static class SixelEncoder
 {
     [ThreadStatic] private static byte[]? t_outputBuf;
@@ -987,6 +1155,16 @@ static class SixelEncoder
         return buf;
     }
 }
+
+/// <summary>
+/// Runs upscayl over one image, drawing a progress bar over the caption row while it works.
+/// </summary>
+/// <remarks>
+/// Blocking on purpose. The key loop is in ReadKey, so there is nothing to return control to, and
+/// upscayl's own output is the only progress signal there is -- it does not report a percentage, so
+/// the bar counts lines and treats ten of them as a run. The bar moving is what it is for; the
+/// number under it is a guess and stops at 100 either way.
+/// </remarks>
 
 record CachedFrame(byte[] Sixel, int TargetW, int TargetH, int AvailWidthPx, int AvailHeightPx, int CellW, int CellH);
 

@@ -317,10 +317,29 @@ public partial class MainWindow : Window
                     e.Handled = true;
                     return;
                 case Key.Enter:
+                {
+                    // Commit: keep the file the search landed on, and go back to browsing everything.
+                    //
+                    // The filtered list cannot simply be left in place. ApplySort rebuilds `files` by
+                    // copying `allFiles.Length` entries into it, so a shorter array throws the moment
+                    // anything re-sorts -- D, N, S, G or '.' -- which is one keystroke AFTER leaving
+                    // search and looks nothing like a search bug. Escape already restores the full list
+                    // for this reason; Enter did not.
+                    var found = _files.Length > 0 && _index < _files.Length ? _files[_index] : null;
+
                     _searchMode = false;
+                    _searchQuery = "";
+                    _files = (string[])_allFiles.Clone();
+                    ApplySort(_files, _allFiles, _sortMode, _groupByFolder);
+
+                    var restored = found is null ? -1 : Array.IndexOf(_files, found);
+                    _index = restored >= 0 ? restored : 0;
+
+                    ResetAlt();
                     Redraw();
                     e.Handled = true;
                     return;
+                }
                 case Key.Right:
                     if (_files.Length > 0 && _index < _files.Length - 1)
                     {
