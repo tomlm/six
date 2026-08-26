@@ -5,7 +5,6 @@
 # Six
 
 ![Screenshot](https://raw.githubusercontent.com/tomlm/Six/refs/heads/main/screenshot.gif)
-
 A terminal image viewer that renders images using [Sixel](https://en.wikipedia.org/wiki/Sixel) graphics, allowing you to browse a folder full of images directly in your terminal.
 
 ## Features
