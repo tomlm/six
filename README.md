@@ -10,6 +10,7 @@
 
 A terminal image viewer that renders images using [Kitty graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/) or [Sixel](https://en.wikipedia.org/wiki/Sixel), allowing you to browse a folder full of images directly in your terminal.
 
+
 ## Features
 
 - Renders images inline in the terminal via the Kitty graphics protocol, in 24-bit colour
