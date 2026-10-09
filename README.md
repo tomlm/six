@@ -42,11 +42,11 @@ A terminal image viewer that renders images using [Kitty graphics](https://sw.ko
 ## Choosing a protocol
 
 Six asks the terminal which protocol it speaks and uses the better one it finds. To override that —
-for a terminal that answers wrongly, or to compare the two — set `SIX_GRAPHICS`:
+for a terminal that answers wrongly, or to compare the two — pass `--kitty` (`-k`) or `--sixel` (`-s`):
 
 ```bash
-SIX_GRAPHICS=kitty six <folder>
-SIX_GRAPHICS=sixel six <folder>
+six --kitty <folder>
+six --sixel <folder>
 ```
 
 The header line names the protocol in use. Animation needs Kitty; a sixel terminal shows the

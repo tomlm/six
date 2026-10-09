@@ -9,20 +9,51 @@ using JeremyAnsel.ColorQuant;
 using SkiaSharp;
 using Microsoft.Win32.SafeHandles;
 
-if (args.Length == 0)
+bool probe = false;
+bool? forceKitty = null; // null: ask the terminal
+string? folderArg = null;
+foreach (var arg in args)
 {
-    Console.Error.WriteLine("Usage: six <folder>");
-    Console.Error.WriteLine("       six --probe    ask the terminal what it supports and print the answers");
+    switch (arg)
+    {
+        case "--probe" or "-p":
+            probe = true;
+            break;
+        case "--kitty" or "-k":
+            forceKitty = true;
+            break;
+        case "--sixel" or "-s":
+            forceKitty = false;
+            break;
+        default:
+            if (arg.StartsWith('-') || folderArg != null)
+                return Usage();
+            folderArg = arg;
+            break;
+    }
+}
+
+static int Usage()
+{
+    Console.Error.WriteLine("Usage: six [--kitty | --sixel] <folder>");
+    Console.Error.WriteLine("       six [--kitty | --sixel] --probe");
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("  -k, --kitty    draw with the kitty graphics protocol, whatever the terminal says");
+    Console.Error.WriteLine("  -s, --sixel    draw with sixel, whatever the terminal says");
+    Console.Error.WriteLine("  -p, --probe    ask the terminal whether it supports kitty and sixel graphics");
     return 1;
 }
 
-if (args[0] is "--probe" or "-p")
+if (probe)
 {
-    ProbeTerminal();
+    ProbeTerminal(forceKitty);
     return 0;
 }
 
-string folder = Path.GetFullPath(args[0]);
+if (folderArg == null)
+    return Usage();
+
+string folder = Path.GetFullPath(folderArg);
 if (!Directory.Exists(folder))
 {
     Console.Error.WriteLine($"Directory not found: {folder}");
@@ -124,7 +155,7 @@ Console.Write("\x1b[?25l\x1b[?1049h");
 
 // Ask before drawing anything: which protocol is in play decides how a frame is encoded, and
 // frames start being encoded on background threads with the very first image.
-GraphicsMode.Kitty = DetectKittyGraphics();
+GraphicsMode.Kitty = forceKitty ?? DetectKittyGraphics();
 
 try
 {
@@ -985,17 +1016,11 @@ static string ProgressBar(int current, int total, int width = 20)
 /// come back behind it there is no telling a terminal that means no from one that has not got round
 /// to answering yet, and the only recourse is to wait out the whole timeout on every start.</para>
 /// <para>The picture is never displayed and the id is never used again, so the question costs the
-/// terminal nothing but a parse. SIX_GRAPHICS forces the answer either way, for a terminal that
-/// gets it wrong.</para>
+/// terminal nothing but a parse. --kitty and --sixel skip the question, for a terminal that gets
+/// it wrong.</para>
 /// </remarks>
 static bool DetectKittyGraphics()
 {
-    var forced = Environment.GetEnvironmentVariable("SIX_GRAPHICS");
-    if (string.Equals(forced, "kitty", StringComparison.OrdinalIgnoreCase))
-        return true;
-    if (string.Equals(forced, "sixel", StringComparison.OrdinalIgnoreCase))
-        return false;
-
     // The attributes reply ends in 'c', and is answered after the graphics query, so it is the
     // terminal having said everything it has to say.
     return SpeaksKittyGraphics(QueryTerminal(KittyEncoder.SupportQuery, 'c', 500));
@@ -1012,6 +1037,29 @@ static bool DetectKittyGraphics()
 /// reply contains them, so they are enough to tell one answer from the other.
 /// </remarks>
 static bool SpeaksKittyGraphics(string response) => response.Contains(";OK", StringComparison.Ordinal);
+
+/// <summary>
+/// Reads the answer to <see cref="SixelEncoder.SupportQuery"/> for sixel support.
+/// </summary>
+/// <remarks>
+/// The reply is <c>ESC [ ? 62 ; 4 ; 22 c</c> or similar: a conformance level followed by the
+/// features implemented, where 4 is sixel graphics. Only the part from the question mark on is
+/// looked at, for the same reason <see cref="SpeaksKittyGraphics"/> ignores the escape. Null means
+/// no reply came back at all, so there is nothing to judge by.
+/// </remarks>
+static bool? SpeaksSixel(string response)
+{
+    int start = response.LastIndexOf('?');
+    if (start < 0)
+        return null;
+
+    int end = response.IndexOf('c', start);
+    if (end < 0)
+        return null;
+
+    // The first parameter is the conformance level, not a feature, so it does not count.
+    return response[(start + 1)..end].Split(';').Skip(1).Contains("4");
+}
 
 /// <summary>
 /// Sends a request to the terminal and collects the reply, as far as a terminating character.
@@ -1065,18 +1113,42 @@ static string QueryTerminal(string request, char terminator, int timeoutMs)
 /// For a terminal that draws nothing, or draws in the wrong protocol. Both answers are guesses
 /// about a terminal made from a few bytes it sent back, and this is the only way to see the bytes.
 /// </remarks>
-static void ProbeTerminal()
+static void ProbeTerminal(bool? forceKitty)
 {
     Console.WriteLine($"Console input passthrough: {VirtualTerminalInput.Describe()}");
     Console.WriteLine();
 
     var kitty = QueryTerminal(KittyEncoder.SupportQuery, 'c', 1000);
+    bool speaksKitty = SpeaksKittyGraphics(kitty);
     Console.WriteLine("Kitty graphics");
     Console.WriteLine($"  sent     {Describe(KittyEncoder.SupportQuery)}");
     Console.WriteLine($"  received {Describe(kitty)}");
-    Console.WriteLine(SpeaksKittyGraphics(kitty)
-        ? "  verdict  supported -- pictures drawn in 24-bit colour"
-        : "  verdict  not supported -- pictures drawn as sixel, 256 colours");
+    Console.WriteLine(speaksKitty
+        ? "  verdict  supported -- 24-bit colour"
+        : "  verdict  not supported");
+    Console.WriteLine();
+
+    var attributes = QueryTerminal(SixelEncoder.SupportQuery, 'c', 1000);
+    bool? speaksSixel = SpeaksSixel(attributes);
+    Console.WriteLine("Sixel graphics");
+    Console.WriteLine($"  sent     {Describe(SixelEncoder.SupportQuery)}");
+    Console.WriteLine($"  received {Describe(attributes)}");
+    Console.WriteLine(speaksSixel switch
+    {
+        true => "  verdict  supported -- 256 colours",
+        false => "  verdict  not supported",
+        null => "  verdict  unknown -- no device attributes reply",
+    });
+    Console.WriteLine();
+
+    bool useKitty = forceKitty ?? speaksKitty;
+    Console.WriteLine("Result");
+    Console.Write($"  drawing  {(useKitty ? "kitty" : "sixel")}");
+    if (forceKitty != null)
+        Console.Write($" (forced by --{(useKitty ? "kitty" : "sixel")})");
+    else if (!useKitty && speaksSixel != true)
+        Console.Write(" (fallback -- the terminal may draw nothing)");
+    Console.WriteLine();
     Console.WriteLine();
 
     var size = QueryTerminal("\x1b[14t", 't', 1000);
@@ -1112,6 +1184,12 @@ static string Describe(string sequence)
 
 static class SixelEncoder
 {
+    /// <summary>
+    /// Primary device attributes request: every terminal answers it, listing what it implements,
+    /// and sixel graphics is feature 4 on that list.
+    /// </summary>
+    public const string SupportQuery = "\x1b[c";
+
     [ThreadStatic] private static byte[]? t_outputBuf;
 
     public static byte[] Encode(byte[] indexed, int width, int height, byte[] palette, int paletteCount)
