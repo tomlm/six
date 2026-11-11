@@ -9,7 +9,7 @@
     <ToolCommandName>gix</ToolCommandName>
   </PropertyGroup>
 <PropertyGroup>
-    <Version>1.0.3</Version>
+    <Version>1.0.6</Version>
     <AssemblyVersion>1.0.2.0</AssemblyVersion>
     <Description></Description>
     <Company>Iciclecreek</Company>
