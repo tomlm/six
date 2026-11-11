@@ -104,6 +104,16 @@ static void SortItems(string[] items, SortMode sortMode)
             foreach (var f in items) timesAsc[f] = File.GetLastWriteTimeUtc(f);
             Array.Sort(items, (a, b) => timesAsc[a].CompareTo(timesAsc[b]));
             break;
+        case SortMode.Size:
+            var sizes = new Dictionary<string, long>(items.Length, StringComparer.OrdinalIgnoreCase);
+            foreach (var f in items) sizes[f] = new FileInfo(f).Length;
+            Array.Sort(items, (a, b) => sizes[b].CompareTo(sizes[a]));
+            break;
+        case SortMode.SizeAsc:
+            var sizesAsc = new Dictionary<string, long>(items.Length, StringComparer.OrdinalIgnoreCase);
+            foreach (var f in items) sizesAsc[f] = new FileInfo(f).Length;
+            Array.Sort(items, (a, b) => sizesAsc[a].CompareTo(sizesAsc[b]));
+            break;
     }
 }
 
@@ -140,8 +150,11 @@ if (files.Length == 0)
 int index = 0;
 bool quit = false;
 var sortMode = SortMode.Random;
+var lastSortMode = SortMode.Name; // restored when '.' toggles out of random
 bool groupByFolder = false;
 bool autoAdvance = false;
+bool searchMode = false;
+string searchQuery = "";
 var sixelCache = new Dictionary<string, CachedFrame>();
 var preloadLock = new object();
 
@@ -181,8 +194,19 @@ try
 
     void Redraw()
     {
+        if (files.Length == 0)
+        {
+            // Only a search narrows the list to nothing; everything else that empties it quits.
+            Console.Write("\x1b[2J\x1b[H");
+            if (GraphicsMode.Kitty)
+                Console.Write(KittyEncoder.DeleteAll);
+            Console.Write($" /{searchQuery}\u2582  No matches");
+            return;
+        }
+
         var displayPath = DisplayPath();
-        ShowImage(displayPath, files.Length, index, sortMode, groupByFolder, autoAdvance, sixelCache, preloadLock, folder, altIndex >= 0 ? $" ALT {altIndex + 1}/{altFiles.Length}" : null);
+        ShowImage(displayPath, files.Length, index, sortMode, groupByFolder, autoAdvance, sixelCache, preloadLock, folder,
+            altIndex >= 0 ? $" ALT {altIndex + 1}/{altFiles.Length}" : null, searchMode ? searchQuery : null);
         // Preload neighbors based on playlist position
         GetConsoleSizePixels(out int cW, out int cH, out int cellW, out int cellH);
         int availH = cH - 1 * cellH - 2 * cellH;
@@ -289,6 +313,62 @@ try
         }
     }
 
+    void ApplySearch()
+    {
+        var currentFile = files.Length > 0 && index < files.Length ? files[index] : null;
+
+        files = string.IsNullOrEmpty(searchQuery)
+            ? (string[])allFiles.Clone()
+            : allFiles.Where(f => Path.GetRelativePath(folder, f)
+                .Contains(searchQuery, StringComparison.OrdinalIgnoreCase)).ToArray();
+
+        if (files.Length > 0)
+        {
+            SortItems(files, sortMode);
+            var idx = currentFile != null ? Array.IndexOf(files, currentFile) : -1;
+            index = idx >= 0 ? idx : 0;
+        }
+        else
+        {
+            index = 0;
+        }
+        ResetAlt();
+    }
+
+    /// <summary>
+    /// Leaves search and goes back to browsing everything, on <paramref name="keep"/> if it is given.
+    /// </summary>
+    /// <remarks>
+    /// The filtered list cannot be left in place: ApplySort copies <c>allFiles.Length</c> entries into
+    /// <c>files</c>, so a shorter array throws on the next re-sort.
+    /// </remarks>
+    void EndSearch(string? keep)
+    {
+        searchMode = false;
+        searchQuery = "";
+        files = (string[])allFiles.Clone();
+        ApplySort(files, allFiles, sortMode, groupByFolder);
+
+        var restored = keep is null ? -1 : Array.IndexOf(files, keep);
+        if (restored >= 0) index = restored;
+        else index = Math.Clamp(index, 0, files.Length - 1);
+
+        lock (preloadLock) { sixelCache.Clear(); }
+        ResetAlt();
+        Redraw();
+    }
+
+    void ShowHelp()
+    {
+        Console.Write("\x1b[2J\x1b[H");
+        if (GraphicsMode.Kitty)
+            Console.Write(KittyEncoder.DeleteAll);
+        foreach (var line in Help.Text.Split('\n'))
+            Console.WriteLine(line.TrimEnd('\r'));
+        Console.ReadKey(true);
+        Redraw();
+    }
+
     Redraw();
 
     var lastAdvance = Environment.TickCount64;
@@ -297,6 +377,44 @@ try
         if (Console.KeyAvailable)
         {
             var key = Console.ReadKey(true);
+
+            if (searchMode)
+            {
+                switch (key.Key)
+                {
+                    case ConsoleKey.Escape:
+                        EndSearch(keep: null);
+                        break;
+                    case ConsoleKey.Enter:
+                        EndSearch(keep: files.Length > 0 ? files[index] : null);
+                        break;
+                    case ConsoleKey.Backspace:
+                        if (searchQuery.Length > 0)
+                        {
+                            searchQuery = searchQuery[..^1];
+                            ApplySearch();
+                        }
+                        Redraw();
+                        break;
+                    case ConsoleKey.RightArrow:
+                        if (index < files.Length - 1) { index++; ResetAlt(); Redraw(); }
+                        break;
+                    case ConsoleKey.LeftArrow:
+                        if (index > 0) { index--; ResetAlt(); Redraw(); }
+                        break;
+                    default:
+                        if (!char.IsControl(key.KeyChar))
+                        {
+                            searchQuery += key.KeyChar;
+                            ApplySearch();
+                            Redraw();
+                        }
+                        break;
+                }
+                lastAdvance = Environment.TickCount64;
+                continue;
+            }
+
             switch (key.Key)
             {
                 case ConsoleKey.RightArrow:
@@ -327,6 +445,16 @@ try
                             Redraw();
                         }
                     }
+                    break;
+                case ConsoleKey.C:
+                    {
+                        var path = DisplayPath();
+                        CopyToClipboard(path);
+                        ShowStatus($" Copied: {path}");
+                    }
+                    break;
+                case ConsoleKey.H:
+                    ShowHelp();
                     break;
                 case ConsoleKey.O:
                     // What is on screen, which is not the playlist entry while an alternate is being
@@ -411,16 +539,15 @@ try
                         bool isResized = Path.GetFileNameWithoutExtension(fileToDel).EndsWith("_resized");
                         if (isResized)
                         {
-                            Console.WriteLine($"Deleted: {fileToDel}");
                             File.Delete(fileToDel);
+                            ShowStatus($" Deleted: {fileToDel}  (press any key)");
                         }
                         else
                         {
-                            foreach(var file in allFiles.Where(f => Path.GetFileName(f) == Path.GetFileName(fileToDel)))
-                            {
-                                Console.WriteLine($"Deleted: {file}");
+                            var toDelete = allFiles.Where(f => Path.GetFileName(f) == Path.GetFileName(fileToDel)).ToList();
+                            foreach (var file in toDelete)
                                 File.Delete(file);
-                            }
+                            ShowStatus($" Deleted {toDelete.Count} file(s): {Path.GetFileName(fileToDel)}  (press any key)");
                         }
                         Console.ReadKey(true);
                         // Remove from both arrays
@@ -429,7 +556,8 @@ try
                         lock (preloadLock) { sixelCache.Remove(fileToDel); }
                         ResetAlt();
                         if (files.Length == 0) { quit = true; break; }
-                        if (index >= files.Length) index = files.Length - 1;
+                        if (isResized && index > 0) index--;
+                        else if (index >= files.Length) index = files.Length - 1;
                         Redraw();
                         lastAdvance = Environment.TickCount64;
                     }
@@ -519,13 +647,16 @@ try
                     break;
                 case ConsoleKey.D:
                 case ConsoleKey.N:
+                case ConsoleKey.S:
                     {
                         string currentFile = files[index];
                         bool shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
-                        if (key.Key == ConsoleKey.D)
-                            sortMode = shift ? SortMode.DateAsc : SortMode.Date;
-                        else
-                            sortMode = shift ? SortMode.NameDesc : SortMode.Name;
+                        sortMode = key.Key switch
+                        {
+                            ConsoleKey.D => shift ? SortMode.DateAsc : SortMode.Date,
+                            ConsoleKey.S => shift ? SortMode.SizeAsc : SortMode.Size,
+                            _ => shift ? SortMode.NameDesc : SortMode.Name,
+                        };
                         ApplySort(files, allFiles, sortMode, groupByFolder);
                         index = Array.IndexOf(files, currentFile);
                         lock (preloadLock) { sixelCache.Clear(); }
@@ -534,10 +665,22 @@ try
                     }
                     break;
                 default:
-                    if (key.KeyChar == '.')
+                    if (key.KeyChar == '/')
+                    {
+                        searchMode = true;
+                        searchQuery = "";
+                        Redraw();
+                    }
+                    else if (key.KeyChar is '.' or '>')
                     {
                         string currentFile = files[index];
-                        sortMode = sortMode == SortMode.Random ? SortMode.Name : SortMode.Random;
+                        if (sortMode == SortMode.Random)
+                            sortMode = lastSortMode;
+                        else
+                        {
+                            lastSortMode = sortMode;
+                            sortMode = SortMode.Random;
+                        }
                         ApplySort(files, allFiles, sortMode, groupByFolder);
                         index = Array.IndexOf(files, currentFile);
                         lock (preloadLock) { sixelCache.Clear(); }
@@ -547,7 +690,7 @@ try
                     break;
             }
         }
-        else if (autoAdvance && Environment.TickCount64 - lastAdvance >= 3000)
+        else if (autoAdvance && files.Length > 0 && Environment.TickCount64 - lastAdvance >= 3000)
         {
             if (index < files.Length - 1) index++;
             else index = 0;
@@ -797,7 +940,7 @@ static void ComputeTargetSize(int origW, int origH, int conWidthPx, int availHei
 }
 
 static void ShowImage(string displayPath, int totalFiles, int index, SortMode sortMode, bool groupByFolder, bool autoAdvance,
-    Dictionary<string, CachedFrame> cache, object preloadLock, string rootFolder, string? altLabel = null)
+    Dictionary<string, CachedFrame> cache, object preloadLock, string rootFolder, string? altLabel = null, string? searchQuery = null)
 {
     string path = displayPath;
 
@@ -805,13 +948,25 @@ static void ShowImage(string displayPath, int totalFiles, int index, SortMode so
     if (GraphicsMode.Kitty)
         Console.Write(KittyEncoder.DeleteAll);
 
-    string order = sortMode switch { SortMode.Random => "RND", SortMode.Date => "DATE\u2191", SortMode.DateAsc => "DATE\u2193", SortMode.NameDesc => "NAME\u2191", _ => "NAME\u2193" };
+    string order = sortMode switch
+    {
+        SortMode.Random => "RND",
+        SortMode.Date => "DATE\u2191",
+        SortMode.DateAsc => "DATE\u2193",
+        SortMode.NameDesc => "NAME\u2191",
+        SortMode.Size => "SIZE\u2191",
+        SortMode.SizeAsc => "SIZE\u2193",
+        _ => "NAME\u2193"
+    };
     string grp = groupByFolder ? " GRP" : "";
     string auto = autoAdvance ? " AUTO" : "";
     string alt = altLabel ?? "";
     string gfx = GraphicsMode.Kitty ? " KITTY" : " SIXEL";
     var name = Path.GetRelativePath(rootFolder, path);
-    Console.WriteLine($" [{index + 1}/{totalFiles}] {name}  [{order}{grp}{auto}{alt}{gfx}]  (.rnd D/\u21e7D date N/\u21e7N name G grp Space auto \u2190\u2192 nav \u2191\u2193 alt Q quit)");
+    if (searchQuery != null)
+        Console.WriteLine($" /{searchQuery}\u2582  [{index + 1}/{totalFiles}] {name}");
+    else
+        Console.WriteLine($" [{index + 1}/{totalFiles}] {name}  [{order}{grp}{auto}{alt}{gfx}]  (H help)");
 
     GetConsoleSizePixels(out int conWidthPx, out int conHeightPx, out int cellW, out int cellH);
 
@@ -998,6 +1153,46 @@ static void RunUpscale(string source, string destination)
 /// Clears to end of line, so a short message does not leave the tail of a longer one behind it.
 /// </remarks>
 static void ShowStatus(string text) => Console.Write($"\u001b[1;1H{text}\u001b[K");
+
+/// <summary>
+/// Puts <paramref name="text"/> on the clipboard.
+/// </summary>
+/// <remarks>
+/// Asks the terminal as well (OSC 52), which is the only route that reaches the right clipboard
+/// over SSH; a terminal that does not understand it ignores it. The local clipboard is set too,
+/// because plenty of terminals turn OSC 52 off by default.
+/// </remarks>
+static void CopyToClipboard(string text)
+{
+    Console.Write($"\u001b]52;c;{Convert.ToBase64String(Encoding.UTF8.GetBytes(text))}\u0007");
+
+    if (OperatingSystem.IsWindows())
+    {
+        WindowsClipboard.SetText(text);
+        return;
+    }
+
+    string[][] tools = OperatingSystem.IsMacOS()
+        ? [["pbcopy"]]
+        : [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]];
+    foreach (var tool in tools)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(tool[0]) { RedirectStandardInput = true, UseShellExecute = false };
+            foreach (var arg in tool[1..]) psi.ArgumentList.Add(arg);
+            using var proc = Process.Start(psi);
+            if (proc == null) continue;
+            proc.StandardInput.Write(text);
+            proc.StandardInput.Close();
+            if (proc.WaitForExit(2000) && proc.ExitCode == 0) return;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Not installed; try the next one.
+        }
+    }
+}
 
 static string ProgressBar(int current, int total, int width = 20)
 {
@@ -1803,6 +1998,64 @@ static class KittyEncoder
 /// <para>Held only for the round trip. The key loop wants the console's reading of an arrow key,
 /// not the three characters the terminal actually sent.</para>
 /// </remarks>
+static class WindowsClipboard
+{
+    private const uint CfUnicodeText = 13;
+    private const uint GmemMoveable = 0x0002;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool OpenClipboard(nint hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetClipboardData(uint uFormat, nint hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GlobalAlloc(uint uFlags, nuint dwBytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GlobalLock(nint hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalUnlock(nint hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern nint GlobalFree(nint hMem);
+
+    public static bool SetText(string text)
+    {
+        if (!OpenClipboard(0))
+            return false;
+        try
+        {
+            EmptyClipboard();
+
+            var hMem = GlobalAlloc(GmemMoveable, (nuint)((text.Length + 1) * sizeof(char)));
+            if (hMem == 0)
+                return false;
+
+            var ptr = GlobalLock(hMem);
+            if (ptr == 0) { GlobalFree(hMem); return false; }
+            Marshal.Copy(text.ToCharArray(), 0, ptr, text.Length);
+            Marshal.WriteInt16(ptr, text.Length * sizeof(char), 0);
+            GlobalUnlock(hMem);
+
+            // Once this succeeds the clipboard owns the memory, and it must not be freed here.
+            if (SetClipboardData(CfUnicodeText, hMem) == 0) { GlobalFree(hMem); return false; }
+            return true;
+        }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+}
+
 static class VirtualTerminalInput
 {
     private const int StdInputHandle = -10;
@@ -1919,7 +2172,40 @@ static class GraphicsMode
 
 record CachedFrame(byte[] Data, int TargetW, int TargetH, int AvailWidthPx, int AvailHeightPx, int CellW, int CellH);
 
-enum SortMode { Random, Name, NameDesc, Date, DateAsc }
+enum SortMode { Random, Name, NameDesc, Date, DateAsc, Size, SizeAsc }
+
+/// <summary>
+/// What H shows. Kept in step with the GUI's copy, since the two take the same keys.
+/// </summary>
+static class Help
+{
+    public const string Text = """
+         Keys
+
+         ← / →          Previous / next image
+         ↑ / ↓          Cycle copies with the same filename in other folders
+         Home / End     First / last image in this folder
+         ⇧Home / ⇧End   Very first / very last image
+         PgDn / PgUp    First image of the next / previous folder
+         Space          Toggle slideshow (3 s)
+         N / ⇧N         Sort by name, ascending / descending
+         D / ⇧D         Sort by date, newest / oldest first
+         S / ⇧S         Sort by size, largest / smallest first
+         . / ⇧.         Toggle random / last sort
+         G              Toggle group by folder
+         /              Search (Enter keeps the match, Esc cancels)
+         C              Copy the current file's path to the clipboard
+         O              Open in the default viewer
+         U              Upscale with upscayl (_resized copy)
+         R              Accept the _resized copy, batch-upscale the other copies
+         ⇧R             Same, upscaling the other copies in parallel
+         Delete         Delete the image and every copy with the same filename
+         H              Show this help
+         Q / Esc        Quit
+
+         Press any key to close
+        """;
+}
 
 /// <summary>
 /// The last answer the terminal gave about its pixel geometry, and the grid it was given for.

@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -23,6 +24,7 @@ public partial class MainWindow : Window
     string[] _files = Array.Empty<string>();
     int _index;
     SortMode _sortMode = SortMode.Random;
+    SortMode _lastSortMode = SortMode.Name; // restored when '.' toggles out of random
     bool _groupByFolder;
     bool _autoAdvance;
     DispatcherTimer? _timer;
@@ -42,6 +44,40 @@ public partial class MainWindow : Window
     bool _searchMode;
     string _searchQuery = "";
 
+    // Set when a key press was used up (closing help, acknowledging a delete), so the character it
+    // types does not also reach OnTextInput -- a '/' that closes help should not open search.
+    bool _keyConsumed;
+
+    /// <summary>
+    /// What H shows. Kept in step with the terminal viewer's copy, since the two take the same keys.
+    /// </summary>
+    const string HelpText = """
+        Keys
+
+        ← / →          Previous / next image
+        ↑ / ↓          Cycle copies with the same filename in other folders
+        Home / End     First / last image in this folder
+        ⇧Home / ⇧End   Very first / very last image
+        PgDn / PgUp    First image of the next / previous folder
+        Space          Toggle slideshow (3 s)
+        N / ⇧N         Sort by name, ascending / descending
+        D / ⇧D         Sort by date, newest / oldest first
+        S / ⇧S         Sort by size, largest / smallest first
+        . / ⇧.         Toggle random / last sort
+        G              Toggle group by folder
+        /              Search (Enter keeps the match, Esc cancels)
+        C              Copy the current file's path to the clipboard
+        O              Open in the default viewer
+        U              Upscale with upscayl (_resized copy)
+        R              Accept the _resized copy, batch-upscale the other copies
+        ⇧R             Same, upscaling the other copies in parallel
+        Delete         Delete the image and every copy with the same filename
+        H              Show this help
+        Q / Esc        Quit
+
+        Press any key to close
+        """;
+
     // Bitmap cache: path -> Bitmap (keeps current, prev, next)
     readonly Dictionary<string, Bitmap> _bitmapCache = new(StringComparer.OrdinalIgnoreCase);
     readonly object _cacheLock = new();
@@ -49,6 +85,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        HelpTextBlock.Text = HelpText;
     }
 
     public async void PickFolderOnLoad()
@@ -149,7 +186,7 @@ public partial class MainWindow : Window
         if (_searchMode)
             Header.Text = $" /{_searchQuery}\u2582  [{_index + 1}/{_files.Length}] {name}  {dims}";
         else
-            Header.Text = $" [{_index + 1}/{_files.Length}] {name}  [{order}{grp}{auto}{alt}]  (.rnd D/\u21e7D date N/\u21e7N name S/\u21e7S size G grp Space auto /search \u2190\u2192 nav \u2191\u2193 alt Q quit)  {dims}";
+            Header.Text = $" [{_index + 1}/{_files.Length}] {name}  [{order}{grp}{auto}{alt}]  (H help)  {dims}";
 
         // Preload prev/next and evict stale entries
         TrimAndPreload(_files, _index);
@@ -234,6 +271,7 @@ public partial class MainWindow : Window
     {
         base.OnTextInput(e);
         if (e.Text == null) return;
+        if (_keyConsumed) { _keyConsumed = false; return; }
 
         if (!_searchMode && e.Text == "/")
         {
@@ -280,12 +318,24 @@ public partial class MainWindow : Window
     {
         base.OnKeyDown(e);
 
+        _keyConsumed = false;
+
         if (_files.Length == 0 && !_searchMode) return;
+
+        // Any key closes help
+        if (HelpOverlay.IsVisible)
+        {
+            HelpOverlay.IsVisible = false;
+            _keyConsumed = true;
+            e.Handled = true;
+            return;
+        }
 
         // If pending delete confirmation, any key confirms
         if (_pendingDelete)
         {
             _pendingDelete = false;
+            _keyConsumed = true;
             Redraw();
             e.Handled = true;
             return;
@@ -528,10 +578,16 @@ public partial class MainWindow : Window
                 break;
             }
 
-            case Key.OemPeriod:
+            case Key.OemPeriod: // '.' or Shift+'.'
             {
                 string currentFile = _files[_index];
-                _sortMode = _sortMode == SortMode.Random ? SortMode.Name : SortMode.Random;
+                if (_sortMode == SortMode.Random)
+                    _sortMode = _lastSortMode;
+                else
+                {
+                    _lastSortMode = _sortMode;
+                    _sortMode = SortMode.Random;
+                }
                 ApplySort(_files, _allFiles, _sortMode, _groupByFolder);
                 _index = Array.IndexOf(_files, currentFile);
                 ResetAlt();
@@ -539,6 +595,20 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
             }
+
+            case Key.C:
+            {
+                var path = DisplayPath();
+                Clipboard?.SetTextAsync(path);
+                Header.Text = $" Copied: {path}";
+                e.Handled = true;
+                break;
+            }
+
+            case Key.H:
+                HelpOverlay.IsVisible = true;
+                e.Handled = true;
+                break;
 
             case Key.O:
                 Process.Start(new ProcessStartInfo(DisplayPath()) { UseShellExecute = true });

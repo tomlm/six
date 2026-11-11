@@ -13,10 +13,26 @@
                    Padding="8,4"
                    Height="26"
                    Background="#222" />
-        <Border BorderBrush="#444" BorderThickness="1" Margin="8">
-            <Image x:Name="ImageView"
-                   Stretch="Uniform"
-                   StretchDirection="Both" />
-        </Border>
+        <Grid>
+            <Border BorderBrush="#444" BorderThickness="1" Margin="8">
+                <Image x:Name="ImageView"
+                       Stretch="Uniform"
+                       StretchDirection="Both" />
+            </Border>
+            <Border x:Name="HelpOverlay"
+                    IsVisible="False"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="#E6222222"
+                    BorderBrush="#666"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="24,16">
+                <TextBlock x:Name="HelpTextBlock"
+                           Foreground="White"
+                           FontFamily="Consolas, Courier New, monospace"
+                           FontSize="14" />
+            </Border>
+        </Grid>
     </DockPanel>
 </Window>

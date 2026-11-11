@@ -91,12 +91,18 @@ Recursively scans `<folder>` for images and opens the viewer.
 | `Shift+N` | Sort by name (descending) |
 | `D` | Sort by date (descending) |
 | `Shift+D` | Sort by date (ascending) |
-| `.` | Toggle random / name sort |
+| `S` | Sort by size (largest first) |
+| `Shift+S` | Sort by size (smallest first) |
+| `.` / `Shift+.` | Toggle random / last sort mode |
 | `G` | Toggle group-by-folder mode |
+| `/` | Search by path (`Enter` keeps the match, `Escape` cancels) |
+| `C` | Copy the current file's path to the clipboard |
 | `O` | Open image in default OS viewer |
 | `U` | Upscale image with upscayl (`_resized` copy) |
-| `R` | Rename `_resized` copy back to original name |
+| `R` | Replace the original with its `_resized` copy, then batch-upscale its copies in other folders |
+| `Shift+R` | Same as `R`, upscaling the other copies in parallel |
 | `Delete` | Delete current image (and all copies with same filename) |
+| `H` | Show help (all keys) |
 | `Q` / `Escape` | Quit |
 
 ## Building from Source
